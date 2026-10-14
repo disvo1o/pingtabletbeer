@@ -20,13 +20,19 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
-DRAW_DAY, DRAW_HOUR, DRAW_MINUTE = 4, 15, 0  # Friday, 15:00
+
+DRAW_DAY, DRAW_HOUR, DRAW_MINUTE = 4, 15, 0
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
 )
 logger = logging.getLogger("pingtablet_beer_bot")
+
+
+# =========================================================
+# ФРАЗЫ ДЛЯ ПРЕДСКАЗАНИЙ
+# =========================================================
 
 PREDICTION_PHRASES = [
     "🔮 Шансы есть. Но сначала придётся победить не только соперников, но и судьбу.",
@@ -44,7 +50,7 @@ PREDICTION_PHRASES = [
     "Звёзды советуют размяться и не спорить с судьёй. Остальное — магия.",
     "Сегодня твой шанс примерно как мяч после сильного топспина: непредсказуем.",
     "Предчувствую эпичный матч. Финал с пеной пока не подтверждён.",
-    "Я спросил нейросеть судьбы. Она ответила: «Сыграй ещё один сет». ",
+    "Я спросил нейросеть судьбы. Она ответила: «Сыграй ещё один сет».",
     "🍺 Пивной оракул молчит… значит, интрига сохраняется.",
     "Может, да. Может, нет. Но ракетку ты всё равно бери.",
     "Твоя удача уже разминается у стола. Не заставляй её ждать.",
@@ -80,6 +86,11 @@ PREDICTION_PHRASES = [
     "Судьба бросила монетку и потеряла её под столом. Интрига!",
     "Пока не обещаю пиво, но обещаю случайность и драму.",
 ]
+
+
+# =========================================================
+# ФРАЗЫ ДЛЯ ТЕХ, КТО НЕ ВЫИГРАЛ
+# =========================================================
 
 NOT_WINNER_PHRASES = [
     "Пока нет 🍺 Но не расстраивайся — следующий розыгрыш уже ближе!",
@@ -135,27 +146,39 @@ NOT_WINNER_PHRASES = [
 ]
 
 
+# =========================================================
+# БАЗА ДАННЫХ
+# =========================================================
+
 def db_connect():
     folder = os.path.dirname(DB_PATH)
     if folder:
         os.makedirs(folder, exist_ok=True)
+
     conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("""CREATE TABLE IF NOT EXISTS participants (
-        chat_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        username TEXT,
-        first_name TEXT,
-        last_seen TEXT NOT NULL,
-        PRIMARY KEY(chat_id, user_id)
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS winners (
-        chat_id INTEGER NOT NULL,
-        draw_date TEXT NOT NULL,
-        user_id INTEGER NOT NULL,
-        username TEXT,
-        first_name TEXT,
-        PRIMARY KEY(chat_id, draw_date)
-    )""")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS participants (
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            first_name TEXT,
+            last_seen TEXT NOT NULL,
+            PRIMARY KEY(chat_id, user_id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS winners (
+            chat_id INTEGER NOT NULL,
+            draw_date TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            first_name TEXT,
+            PRIMARY KEY(chat_id, draw_date)
+        )
+    """)
+
     conn.commit()
     return conn
 
@@ -173,51 +196,101 @@ def db_session():
 def record_participant(chat_id, user):
     if user is None or user.is_bot:
         return
+
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+
     with db_session() as conn:
         conn.execute(
-            """INSERT INTO participants(chat_id,user_id,username,first_name,last_seen)
-            VALUES(?,?,?,?,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET
-            username=excluded.username, first_name=excluded.first_name, last_seen=excluded.last_seen""",
+            """
+            INSERT INTO participants
+                (chat_id, user_id, username, first_name, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                username=excluded.username,
+                first_name=excluded.first_name,
+                last_seen=excluded.last_seen
+            """,
             (chat_id, user.id, user.username, user.first_name or "", now),
         )
 
 
+# =========================================================
+# РАСПОЗНАВАНИЕ СООБЩЕНИЙ
+# =========================================================
+
 def normalize(text):
-    return re.sub(r"\s+", " ", (text or "").lower().replace("ё", "е")).strip()
+    return re.sub(
+        r"\s+", " ",
+        (text or "").lower().replace("ё", "е")
+    ).strip()
 
 
 def is_beer_question(text):
-    """Recognize natural phrasing, punctuation and minor wording differences."""
     t = normalize(text)
-    has_beer = any(word in t for word in ("пиво", "пива", "пивко", "пивом", "пивной", "пивное"))
-    has_win = any(word in t for word in ("выигра", "побед", "достан", "получу", "получить", "приз"))
-    first_person = any(phrase in t for phrase in (
-        "я выигра", "я побед", "я получ", "мне достан", "мне выпадет", "мне выпадет",
-        "выиграю ли", "выиграл ли я", "выиграла ли я", "мне пиво", "пиво мне",
+
+    has_beer = any(word in t for word in (
+        "пиво", "пива", "пивко", "пивом", "пивной", "пивное"
     ))
+
+    has_win = any(word in t for word in (
+        "выигра", "побед", "достан", "получу", "получить", "приз"
+    ))
+
+    first_person = any(phrase in t for phrase in (
+        "я выигра",
+        "я побед",
+        "я получ",
+        "мне достан",
+        "мне выпадет",
+        "выиграю ли",
+        "выиграл ли я",
+        "выиграла ли я",
+        "мне пиво",
+        "пиво мне",
+    ))
+
     return has_beer and (has_win or first_person or "?" in t)
 
 
 def asks_about_result(text):
     t = normalize(text)
-    past_markers = (
-        "я выиграл", "я выиграла", "я уже выиграл", "я уже выиграла",
-        "выиграл ли я", "выиграла ли я", "мне досталось", "я победил", "я победила",
-        "я получил", "я получила", "мне выпало", "мне достался",
-    )
-    return any(marker in t for marker in past_markers)
 
+    markers = (
+        "я выиграл",
+        "я выиграла",
+        "я уже выиграл",
+        "я уже выиграла",
+        "выиграл ли я",
+        "выиграла ли я",
+        "мне досталось",
+        "я победил",
+        "я победила",
+        "я получил",
+        "я получила",
+        "мне выпало",
+        "мне достался",
+    )
+
+    return any(marker in t for marker in markers)
+
+
+# =========================================================
+# КОМАНДЫ В ЛИЧНЫХ СООБЩЕНИЯХ
+# =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     chat = update.effective_chat
+
     if not message or not chat or chat.type != "private":
         return
+
     await message.reply_text(
-        "привет! каждую пятницу в 15:00 по москве я разыгрываю 1 пиво среди участников группового чата.\n\n"
+        "привет! каждую пятницу в 15:00 по москве "
+        "я разыгрываю 1 пиво среди участников группового чата.\n\n"
         "напиши сообщение в группе, чтобы попасть в список участников.\n\n"
-        "если спросишь «когда розыгрыш?» или «я выиграл пиво», я отвечу.\n"
+        "спроси «когда розыгрыш?» или «я выиграю пиво?» — "
+        "и я отвечу.\n\n"
         "команды доступны только в личных сообщениях.\n\n"
         "приз — только для совершеннолетних и при соблюдении местных законов."
     )
@@ -226,12 +299,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     chat = update.effective_chat
+
     if not message or not chat or chat.type != "private":
         return
+
     await message.reply_text(
         "команды работают только в личных сообщениях с ботом.\n"
         "/start — приветствие\n"
-        "/beer_status — статус розыгрыша в группе\n"
+        "/beer_status — статус розыгрыша\n"
         "/beer_test — проверка связи"
     )
 
@@ -239,160 +314,301 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     chat = update.effective_chat
-    user = update.effective_user
+
     if not message or not chat or chat.type != "private":
         return
-    logger.info("/beer_test received chat_id=%s user_id=%s chat_type=%s", chat.id, user.id if user else None, chat.type)
-    await message.reply_text("✅ я получаю команды и отвечаю. проверка связи пройдена.")
+
+    logger.info("beer_test received in private chat %s", chat.id)
+    await message.reply_text(
+        "✅ я получаю команды и отвечаю. проверка связи пройдена."
+    )
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     chat = update.effective_chat
+
     if not message or not chat or chat.type != "private":
         return
 
-    # Команда вызывается в личке; показываем последнюю активную группу.
     with db_session() as conn:
-        group_row = conn.execute(
-            "SELECT chat_id FROM participants GROUP BY chat_id ORDER BY MAX(last_seen) DESC LIMIT 1"
-        ).fetchone()
+        group_row = conn.execute("""
+            SELECT chat_id
+            FROM participants
+            GROUP BY chat_id
+            ORDER BY MAX(last_seen) DESC
+            LIMIT 1
+        """).fetchone()
+
         if not group_row:
-            await message.reply_text("пока нет участников из групповых чатов.")
+            await message.reply_text(
+                "пока нет участников из групповых чатов."
+            )
             return
+
         group_id = group_row[0]
         today = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
-        count = conn.execute("SELECT COUNT(*) FROM participants WHERE chat_id=?", (group_id,)).fetchone()[0]
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM participants WHERE chat_id=?",
+            (group_id,),
+        ).fetchone()[0]
+
         winner = conn.execute(
-            "SELECT first_name,username FROM winners WHERE chat_id=? AND draw_date=?", (group_id, today)
+            """
+            SELECT first_name, username
+            FROM winners
+            WHERE chat_id=? AND draw_date=?
+            """,
+            (group_id, today),
         ).fetchone()
 
-    reply = f"участников в последней активной группе: {count}\nрозыгрыш: пятница, 15:00 ({TIMEZONE})."
+    reply = (
+        f"участников в последней активной группе: {count}\n"
+        f"розыгрыш: пятница, 15:00 ({TIMEZONE})."
+    )
+
     if winner:
-        name = f"@{winner[1]}" if winner[1] else (winner[0] or "победитель")
+        name = f"@{winner[1]}" if winner[1] else (
+            winner[0] or "победитель"
+        )
         reply += f"\nпобедитель сегодня: {name}"
+
     await message.reply_text(reply.lower())
 
 
-async def answer_beer_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Answer beer-draw questions in group chats; commands remain private-only."""
+# =========================================================
+# ОТВЕТЫ В ГРУППЕ
+# =========================================================
+
+async def answer_beer_questions(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     message = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
 
     if not message or not chat or not user or user.is_bot:
         return
+
     if chat.type not in ("group", "supergroup"):
         return
 
     raw_text = message.text or message.caption or ""
     text = normalize(raw_text)
+
     if not text:
         return
 
-    # Log incoming group text (without any token or sensitive configuration)
-    logger.info("Group message received: chat_id=%s user_id=%s text=%r", chat.id, user.id, text[:200])
+    # 1. Вопрос о времени розыгрыша
+    asks_draw = bool(re.search(
+        r"когда\s+(?:будет\s+)?розыгрыш(?:\s+пива)?",
+        text,
+    ))
 
-    # Match broad natural-language variants, punctuation and case.
-    asks_draw = (
-        "розыгрыш" in text and any(word in text for word in (
-            "когда", "во сколько", "какого числа", "в какой день", "дата", "время", "будет"
-        ))
-    ) or (
-        "пиво" in text and any(word in text for word in ("когда", "во сколько", "когда дадут", "когда разыграют"))
-    )
-
-    # Variants such as: «я выиграл пиво?», «я выиграла пиво», «а я выиграл?»,
-    # «я выиграю пиво?», «мне досталось пиво?».
-    asks_won = (
-        "пиво" in text and any(word in text for word in (
-            "выиграл", "выиграла", "выиграю", "победил", "победила",
-            "досталось", "достанется", "получил", "получила", "получу", "мне выпадет"
-        ))
-    ) or bool(re.search(r"\bя\s+(?:уже\s+)?выиграл(?:а)?\b", text)) and "пиво" in text
-
-    if asks_draw or asks_won:
-        logger.info("Beer question matched: chat_id=%s user_id=%s", chat.id, user.id)
+    if asks_draw:
         await message.reply_text("узнаем в пятницу в 15:00!")
+        return
+
+    # 2. Вопрос о результате прошедшего розыгрыша
+    if asks_about_result(text) and is_beer_question(text):
+        today = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
+
+        with db_session() as conn:
+            winner = conn.execute(
+                """
+                SELECT user_id, username, first_name
+                FROM winners
+                WHERE chat_id=? AND draw_date=?
+                """,
+                (chat.id, today),
+            ).fetchone()
+
+        if winner is None:
+            await message.reply_text(
+                "розыгрыш ещё не состоялся или результат пока не записан 🍺"
+            )
+            return
+
+        if winner[0] == user.id:
+            await message.reply_text(
+                "да! сегодня пиво достаётся тебе 🍺🎉"
+            )
+        else:
+            phrase = random.choice(NOT_WINNER_PHRASES)
+            await message.reply_text(phrase.lower())
+
+        return
+
+    # 3. Вопрос о шансах выиграть в будущем
+    if is_beer_question(text) and not asks_about_result(text):
+        phrase = random.choice(PREDICTION_PHRASES)
+        await message.reply_text(phrase.lower())
 
 
-async def track_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# УЧЁТ УЧАСТНИКОВ
+# =========================================================
+
+async def track_messages(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     chat = update.effective_chat
     user = update.effective_user
+
     if chat and chat.type in ("group", "supergroup") and user:
         record_participant(chat.id, user)
 
 
+# =========================================================
+# ПЯТНИЧНЫЙ РОЗЫГРЫШ
+# =========================================================
+
 def next_draw(now):
-    target = now.replace(hour=DRAW_HOUR, minute=DRAW_MINUTE, second=0, microsecond=0)
+    target = now.replace(
+        hour=DRAW_HOUR,
+        minute=DRAW_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+
     target += timedelta(days=(DRAW_DAY - now.weekday()) % 7)
+
     if target <= now:
         target += timedelta(days=7)
+
     return target
 
 
 async def draw_loop(app: Application):
     tz = ZoneInfo(TIMEZONE)
+
     while True:
         now = datetime.now(tz)
         target = next_draw(now)
-        logger.info("Next draw at %s (%s)", target.isoformat(), TIMEZONE)
-        await asyncio.sleep(max(1, (target - now).total_seconds()))
+
+        logger.info(
+            "Next draw at %s (%s)",
+            target.isoformat(),
+            TIMEZONE,
+        )
+
+        await asyncio.sleep(
+            max(1, (target - now).total_seconds())
+        )
+
         draw_date = datetime.now(tz).date().isoformat()
+
         with db_session() as conn:
-            chats = conn.execute("SELECT DISTINCT chat_id FROM participants").fetchall()
+            chats = conn.execute(
+                "SELECT DISTINCT chat_id FROM participants"
+            ).fetchall()
+
         for (chat_id,) in chats:
             try:
                 with db_session() as conn:
                     existing = conn.execute(
-                        "SELECT 1 FROM winners WHERE chat_id=? AND draw_date=?", (chat_id, draw_date)
+                        """
+                        SELECT 1 FROM winners
+                        WHERE chat_id=? AND draw_date=?
+                        """,
+                        (chat_id, draw_date),
                     ).fetchone()
+
                     if existing:
                         continue
+
                     people = conn.execute(
-                        "SELECT user_id,username,first_name FROM participants WHERE chat_id=?", (chat_id,)
+                        """
+                        SELECT user_id, username, first_name
+                        FROM participants
+                        WHERE chat_id=?
+                        """,
+                        (chat_id,),
                     ).fetchall()
+
                     if not people:
-                        logger.warning("No participants in chat %s; skipping draw", chat_id)
+                        logger.warning(
+                            "No participants in chat %s",
+                            chat_id,
+                        )
                         continue
+
                     winner = random.choice(people)
+
                     conn.execute(
-                        "INSERT OR IGNORE INTO winners(chat_id,draw_date,user_id,username,first_name) VALUES(?,?,?,?,?)",
-                        (chat_id, draw_date, winner[0], winner[1], winner[2]),
+                        """
+                        INSERT OR IGNORE INTO winners
+                            (chat_id, draw_date, user_id, username, first_name)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            chat_id,
+                            draw_date,
+                            winner[0],
+                            winner[1],
+                            winner[2],
+                        ),
                     )
-                mention = f"@{winner[1]}" if winner[1] else (winner[2] or "Победитель")
+
+                mention = (
+                    f"@{winner[1]}"
+                    if winner[1]
+                    else (winner[2] or "победитель")
+                )
+
                 await app.bot.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"🍺 пятничный розыгрыш!\n\nсегодня 1 пиво на любом турнире pink tablet получает: "
-                        f"{mention} 🎉\n\nпокажи это сообщение организатору турнира, чтобы получить приз. "
-                        "только для совершеннолетних и при соблюдении местных законов и правил площадки."
+                        "🍺 пятничный розыгрыш!\n\n"
+                        "сегодня 1 пиво на любом турнире "
+                        f"ping tablet получает: {mention} 🎉\n\n"
+                        "покажи это сообщение организатору турнира, "
+                        "чтобы получить приз. только для совершеннолетних "
+                        "и при соблюдении местных законов и правил площадки."
                     ).lower(),
                 )
+
             except Exception:
-                logger.exception("Failed to draw/send winner for chat %s", chat_id)
+                logger.exception(
+                    "Failed to draw/send winner for chat %s",
+                    chat_id,
+                )
 
 
 async def post_init(app: Application):
-    # Use asyncio.create_task here so PTB doesn't warn that Application.create_task
-    # was called before the application started polling.
-    app.bot_data["draw_task"] = asyncio.create_task(draw_loop(app), name="friday-beer-draw")
+    app.bot_data["draw_task"] = asyncio.create_task(
+        draw_loop(app),
+        name="friday-beer-draw",
+    )
 
 
 async def post_shutdown(app: Application):
     task = app.bot_data.get("draw_task")
+
     if task and not task.done():
         task.cancel()
+
         try:
             await task
         except asyncio.CancelledError:
             pass
 
 
+# =========================================================
+# ЗАПУСК
+# =========================================================
+
 def main():
     if not TOKEN:
-        raise RuntimeError("Не задан BOT_TOKEN. Добавь токен бота в переменные окружения Railway.")
+        raise RuntimeError(
+            "Не задан BOT_TOKEN. Добавь токен в переменные Railway."
+        )
+
     db_connect().close()
+
     app = (
         Application.builder()
         .token(TOKEN)
@@ -400,15 +616,34 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("beer_help", help_command))
     app.add_handler(CommandHandler("beer_status", status))
     app.add_handler(CommandHandler("beer_test", test_command))
-    # Handler is intentionally not restricted to mentions: the target question works as plain text too.
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, answer_beer_questions), group=0)
-    # Track any ordinary group activity in a separate handler group.
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_messages), group=1)
-    logger.info("Starting bot. Timezone: %s; database: %s", TIMEZONE, DB_PATH)
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            answer_beer_questions,
+        ),
+        group=0,
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.ALL & ~filters.COMMAND,
+            track_messages,
+        ),
+        group=1,
+    )
+
+    logger.info(
+        "Starting bot. Timezone: %s; database: %s",
+        TIMEZONE,
+        DB_PATH,
+    )
+
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
