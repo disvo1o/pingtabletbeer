@@ -408,7 +408,7 @@ async def answer_beer_questions(
     ))
 
     if asks_draw:
-        await message.reply_text("узнаем в пятницу в 15:00!")
+        await message.reply_text("победителя узнаем в пятницу в 15:00!")
         return
 
     # 2. Вопрос о результате прошедшего розыгрыша
@@ -427,7 +427,7 @@ async def answer_beer_questions(
 
         if winner is None:
             await message.reply_text(
-                "розыгрыш ещё не состоялся или результат пока не записан 🍺"
+                "розыгрыш ещё не состоялся 🍺"
             )
             return
 
